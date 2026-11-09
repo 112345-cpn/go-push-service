@@ -1,0 +1,19 @@
+# 编译产物
+*.exe
+*.test
+*.out
+
+# 压测日志
+bench/logs/
+
+# 修改前的备份
+.orig/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 系统文件
+.DS_Store
+Thumbs.db
