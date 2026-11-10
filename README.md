@@ -1,5 +1,7 @@
 # go-push-service
 
+[![test](https://github.com/112345-cpn/go-push-service/actions/workflows/test.yml/badge.svg)](https://github.com/112345-cpn/go-push-service/actions/workflows/test.yml)
+
 秒杀结果的实时推送服务。用 Go + WebSocket 把"抢到了"从后端主动推给浏览器，替掉前端轮询。
 
 > 这是我从一个 Java 秒杀系统（黑马点评）里拆出来的组件：Java 那边下单成功后往 Redis 发一条结果，这个服务订阅到之后，通过长连接推给对应的用户。
