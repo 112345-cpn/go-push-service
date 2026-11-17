@@ -4,7 +4,7 @@
 
 秒杀结果的实时推送服务。用 Go + WebSocket 把"抢到了"从后端主动推给浏览器，替掉前端轮询。
 
-> 这是我从一个 Java 秒杀系统（黑马点评）里拆出来的组件：Java 那边下单成功后往 Redis 发一条结果，这个服务订阅到之后，通过长连接推给对应的用户。
+> 这是我从一个 Java 优惠券平台（拾味）里拆出来的组件：Java 那边支付成功、核销、退款审核通过后往 Redis 发一条消息，这个服务订阅到之后，通过长连接推给对应的用户。
 
 ## 为什么要单独拆一个服务
 
@@ -19,22 +19,24 @@
 ## 链路
 
 ```
-浏览器 ──HTTP 下单──▶ Java 秒杀服务 ──写结果──▶ Redis (seckill:result)
+浏览器 ──HTTP 下单──▶ Java 业务服务 ──发布──▶ Redis (shiwei:push)
                                                       │
 浏览器 ◀──WebSocket 推送──────────────────────  Go 推送服务（本项目）
                                                       │
                                                     订阅
 ```
 
-Java 侧只改了几行：原来 `return "排队中"`，现在多一步 `redisTemplate.convertAndSend("seckill:result", uid + ":" + result)`。
+Java 侧只改了几行：`redisTemplate.convertAndSend("shiwei:push", uid + ":" + json)`。
+
+消息体是 `uid:json` 两段，网关用 `SplitN(payload, ":", 2)` 只切第一个冒号，后面的 JSON 原样转发。事件类型有 `SECKILL_RESULT`、`ORDER_PAID`、`ORDER_VERIFIED`、`REFUND_CHANGED`。
 
 ## 目录结构
 
 ```
 .
-├── main.go                  HTTP 入口、WebSocket 升级、Redis 订阅
+├── main.go                  HTTP 入口、WebSocket 升级、Redis 订阅（带断线重连）
 ├── hub.go                   在线连接表（uid → 连接），每个连接一把写锁
-├── hub_test.go              4 个单元测试，含重连场景
+├── hub_test.go              单元测试：重连场景 + 推送格式解析
 ├── FIXES.md                 开发过程中修掉的问题清单和原因
 └── bench/
     ├── README.md            怎么自己压测（PowerShell 命令 + 参数说明）
@@ -52,19 +54,22 @@ Java 侧只改了几行：原来 `return "排队中"`，现在多一步 `redisTe
 # 1. 拉依赖
 go mod download
 
-# 2. 起服务（默认监听 :8080，连 127.0.0.1:6379）
+# 2. 起服务（默认监听 :8080，连 127.0.0.1:6380）
 go run .
+
+#    端口不是 6380 的话用环境变量指定
+#    $env:REDIS_ADDR="127.0.0.1:6379"; go run .
 
 # 3. 另开一个窗口，连一条 WebSocket
 #    浏览器控制台里执行：
-#    const ws = new WebSocket('ws://localhost:8080/ws?uid=1001');
+#    const ws = new WebSocket('ws://localhost:8080/ws?uid=7');
 #    ws.onmessage = e => console.log(e.data);
 
 # 4. 发一条结果
-redis-cli publish seckill:result "1001:抢到了"
+redis-cli publish shiwei:push '7:{"type":"SECKILL_RESULT","data":{"status":"SUCCESS","orderId":"12"}}'
 ```
 
-浏览器控制台会打出 `抢到了`。
+浏览器控制台会打出那段 JSON。
 
 ## 压测数据
 

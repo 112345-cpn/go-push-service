@@ -54,3 +54,29 @@ func TestPushUnknownUID(t *testing.T) {
 		t.Fatal("推给不存在的用户却返回 true")
 	}
 }
+
+// 拾味 Java 侧拼的是 userId + ":" + JSON，JSON 里自己带冒号。
+// 只切第一个冒号才不会把 body 切碎。
+func TestParsePushKeepsJSONIntact(t *testing.T) {
+	payload := `7:{"type":"SECKILL_RESULT","data":{"status":"SUCCESS","orderId":"12"}}`
+	uid, msg, ok := parsePush(payload)
+	if !ok {
+		t.Fatal("正常格式被判定为非法")
+	}
+	if uid != "7" {
+		t.Fatalf("uid=%q，期望 7", uid)
+	}
+	want := `{"type":"SECKILL_RESULT","data":{"status":"SUCCESS","orderId":"12"}}`
+	if msg != want {
+		t.Fatalf("body 被切坏了：%q", msg)
+	}
+}
+
+func TestParsePushInvalid(t *testing.T) {
+	cases := []string{"", "no-colon", ":只有冒号没uid"}
+	for _, c := range cases {
+		if _, _, ok := parsePush(c); ok {
+			t.Fatalf("%q 应该被判为非法", c)
+		}
+	}
+}

@@ -5,6 +5,7 @@
 
 # 压测日志
 bench/logs/
+log.txt
 
 # 修改前的备份
 .orig/

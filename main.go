@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -32,11 +33,20 @@ var upgrader = websocket.Upgrader{
 }
 
 const (
-	redisChannel = "seckill:result"
+	// 拾味的业务服务往这个频道 PUBLISH。改这个名字要两边一起改
+	redisChannel = "shiwei:push"
 	pongWait     = 60 * time.Second
 	pingPeriod   = 25 * time.Second
 	maxMsgSize   = 1 << 20 // 单条消息上限 1MB，防止客户端猛发大包把内存吃光
 )
+
+// 拾味的 Redis 映射在宿主机 6380，不是默认的 6379，所以不能用默认地址
+func redisAddr() string {
+	if v := os.Getenv("REDIS_ADDR"); v != "" {
+		return v
+	}
+	return "127.0.0.1:6380"
+}
 
 type Server struct {
 	hub *Hub
@@ -78,26 +88,67 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listenRedis(ctx context.Context) {
-	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Printf("连不上 Redis，订阅没启动: %v", err)
-		return
+	for {
+		if !s.subscribeOnce(ctx) {
+			return // ctx 取消了，别再重连
+		}
+		log.Println("Redis 订阅断开，3 秒后重连")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
 	}
-	fmt.Println("已连上 Redis，等待秒杀结果...")
+}
+
+// subscribeOnce 连一次、订阅一次，阻塞到连接断开为止。
+// 返回值 false 表示 ctx 被取消，调用方该退出。
+//
+// 原来这里连不上就直接 return，Redis 一重启订阅就永久没了，
+// 但服务还活着、还能接连接——属于最难查的假活。
+func (s *Server) subscribeOnce(ctx context.Context) bool {
+	rdb := redis.NewClient(&redis.Options{Addr: redisAddr()})
+	defer rdb.Close()
+
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Printf("连不上 Redis %s: %v", redisAddr(), err)
+		return true
+	}
+
 	sub := rdb.Subscribe(ctx, redisChannel)
 	defer sub.Close()
-	for msg := range sub.Channel() {
-		parts := strings.SplitN(msg.Payload, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		uid, result := parts[0], parts[1]
-		if ok := s.hub.Push(uid, result); ok {
-			fmt.Printf("已推送给%s:%s\n", uid, result)
-		} else {
-			fmt.Printf("用户%s不在线，消息丢弃\n", uid)
+
+	fmt.Println("已连上 Redis，等待推送消息...")
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case msg, ok := <-sub.Channel():
+			if !ok {
+				return true
+			}
+			uid, body, ok := parsePush(msg.Payload)
+			if !ok {
+				continue
+			}
+			if s.hub.Push(uid, body) {
+				fmt.Printf("已推送给%s:%s\n", uid, body)
+			} else {
+				fmt.Printf("用户%s不在线，消息丢弃\n", uid)
+			}
 		}
 	}
+}
+
+// parsePush 把 "uid:json" 切成接收者和消息体。
+// 只切第一个冒号，JSON 内部的冒号原样保留。
+// 拼接格式由 Java 侧 PushService 决定，两边改动要同步。
+func parsePush(payload string) (uid string, msg string, ok bool) {
+	parts := strings.SplitN(payload, ":", 2)
+	if len(parts) != 2 || parts[0] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func main() {
